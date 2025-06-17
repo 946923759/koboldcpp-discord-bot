@@ -1,5 +1,14 @@
 # KoboldCPP Discord Bot
-Discord bot that uses [KoboldCPP](https://github.com/LostRuins/koboldcpp) API and character cards
+Discord bot that uses [KoboldCPP](https://github.com/LostRuins/koboldcpp) API and character cards to pretend to be a character.
+
+# Features
+- Set installed character cards or pick one from your files using the /upload feature
+- If using installed cards and the card supports alternative starting prompts, you can select an alternative prompt with the /character command.
+- Set a lorebook along with the character card to enhance your character.
+- Replace {{user}} and {{char}} output with text for more realistic conversations. It will do this on a per-message basis so multiple users can reply.
+- Only connects to the KoboldCPP API and Discord. No need to worry about API subscriptions or revoked API access!
+
+# Screenshots
 
 # Setup
 1. Download main.py
