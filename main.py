@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
+import sys
 import os
 import discord
 from discord.ext import commands
 import json
-from typing import Dict, Any, Tuple, Optional, List, TypedDict, Deque
+from typing import Dict, Any, Tuple, Optional, List, TypedDict, Deque, Union
 from collections import deque
 import aiohttp
 from aiohttp import web
 from glob import glob
+from PIL import Image
+import base64
+from io import BytesIO
 
 class TavernCardV2Data(TypedDict):
 	name: str
@@ -90,6 +94,13 @@ class KoboldCPPData(TypedDict):
 	use_default_badwordsids: bool
 	bypass_eos: bool
 
+if 'DISCORD_TOKEN' not in os.environ:
+	print("Please add your bot's token to environment variables as DISCORD_TOKEN so the bot can read it")
+	sys.exit(1)
+
+TOKEN = os.environ['DISCORD_TOKEN']
+KOBOLDCPP_API_ENDPOINT = "http://localhost:5001/api/v1/generate"
+
 
 # Enable intents for message content reading.
 intents = discord.Intents.default()
@@ -98,8 +109,6 @@ intents.message_content = True  # Required to read message content
 
 # Create the bot instance with a command prefix (here "!" is arbitrary)
 bot = commands.Bot(command_prefix='!', intents=intents)
-TOKEN = os.environ['DISCORD_TOKEN']
-KOBOLDCPP_API_ENDPOINT = "http://localhost:5001/api/v1/generate"
 
 message_history:Deque[str] = deque(maxlen=50)
 character_data:TavernCardV2 = {} #type: ignore
@@ -210,7 +219,7 @@ async def contact_koboldcpp(message_history:Deque[str], character_data:TavernCar
 	return ""
 
 
-async def set_character(ctx: discord.ApplicationContext, new_character_data:TavernCardV2, username:str="User", alt_prompt:int = -1):
+async def set_character(ctx: discord.ApplicationContext, new_character_data:TavernCardV2, username:str="User", alt_prompt:int = -1, optional_file_attachment:Union[str,None] = None):
 	global message_history
 	global character_data
 
@@ -237,9 +246,12 @@ async def set_character(ctx: discord.ApplicationContext, new_character_data:Tave
 		response += "\n\n"+first_message.replace("{{char}}", character_data['data']['name']).replace("{{user}}",username)
 		
 		#Send to discord
-		await ctx.respond(response)
+		file = None
+		if optional_file_attachment:
+			file = discord.File(optional_file_attachment)
+		await ctx.respond(response, file=file)
 		nick_changed, err_message = await set_nickname(ctx, character_data['data']['name'])
-		#print("Loaded new character card")
+		print("Loaded new character card! "+character_data['data']['name'])
 
 
 
@@ -299,11 +311,43 @@ async def get_alternative_prompts(ctx: discord.AutocompleteContext) -> list:
 	#print(prompts)
 	return prompts
 
-@bot.slash_command(name="character")
+def load_character_from_card_image(card_data: str | BytesIO | os.PathLike) -> TavernCardV2 | None:
+	try:
+		with Image.open(card_data) as img:
+			if 'chara' in img.info:
+				return json.loads(base64.b64decode(img.info['chara']))
+	except ValueError as e:
+		print(e)
+		print("Corruption in card or improper bytes passed?")
+	except Exception as e:
+		print(e)
+		return None
+	#return None
+		#else:
+		#	await ctx.respond("❌ This image doesn't seem to have any character card data embedded.", ephemeral=True)
+		#	return
+	#raise Exception("Failed to decode this card!")
+
+
+@bot.slash_command(
+	name="character",
+	description="Sets the bot to a character that's been installed by the bot owner.",
+	default_member_permissions=discord.Permissions(administrator=True)
+)
 @discord.option(
 	"card",
-	description="Pick an installed character card from this list.",
-	autocomplete=lambda ctx: glob("*.json")
+	description="Pick an installed character card.",
+	#autocomplete=lambda ctx: glob("Characters"+os.path.sep+"*.json") + glob("Characters"+os.path.sep+"*.png")
+	# autocomplete=lambda ctx: list(
+	# 	filter(
+	# 		lambda f: os.path.isfile(os.path.join("Characters", f)) and f.lower().endswith(('.png', '.json')),
+	# 		os.listdir("Characters")
+	# 	)
+	# )
+	autocomplete=lambda ctx: list([
+        f for f in os.listdir("Characters")
+        if os.path.isfile(os.path.join("Characters", f)) and f.lower().endswith(('.png', '.json'))
+    ])
 )
 @discord.option(
 	"alt_prompt",
@@ -320,6 +364,7 @@ async def get_alternative_prompts(ctx: discord.AutocompleteContext) -> list:
 	#default="None",
 	#autocomplete=list_installed_characters,
 	autocomplete=lambda ctx: glob("Lorebooks"+os.path.sep+"*.json")
+	#autocomplete=lambda ctx: os.listdir("Lorebooks")
 )
 async def autocomplete_basic_example(
 	ctx: discord.ApplicationContext,
@@ -340,29 +385,41 @@ async def autocomplete_basic_example(
 
 	Note that the basic_autocomplete function itself will still only return a maximum of 25 items.
 	"""
-	with open(card,'r', encoding='utf-8') as f:
-		character_data:TavernCardV2 = json.load(f)
+	card_img = None
+	card = os.path.join("Characters",card)
 
-		if lorebook:
-			try:
-				with open(lorebook,'r', encoding='utf-8') as f_lorebook:
-					lorebook_data:CharacterBook = json.load(f_lorebook)
-					print("Loaded lorebook "+lorebook)
-					if type(lorebook_data['entries'])==dict:
-						lorebook_data['entries'] = list(lorebook_data['entries'].values())
+	if card.lower().endswith("png"):
+		card_img = card
+		tmp_data = load_character_from_card_image(card)
+		if tmp_data:
+			character_data:TavernCardV2 = tmp_data
+		else:
+			await ctx.respond("❌ This image doesn't seem to have any character card data embedded.", ephemeral=True)
+			return
+	else:
+		with open(card,'r', encoding='utf-8') as f:
+			character_data:TavernCardV2 = json.load(f)
 
-					character_data['data']['character_book'] = lorebook_data
-			except:
-				pass
+	if lorebook:
+		try:
+			with open(lorebook,'r', encoding='utf-8') as f_lorebook:
+				lorebook_data:CharacterBook = json.load(f_lorebook)
+				print("Loaded lorebook "+lorebook)
+				if type(lorebook_data['entries'])==dict:
+					lorebook_data['entries'] = list(lorebook_data['entries'].values())
+
+				character_data['data']['character_book'] = lorebook_data
+		except:
+			pass
 
 
-		alt_prompt_num:int = -1
-		if alt_prompt != "Default":
-			for i in range(len(character_data['data']['alternate_greetings'])):
-				if character_data['data']['alternate_greetings'][i].startswith(alt_prompt):
-					alt_prompt_num = i
-					break
-		await set_character(ctx, character_data, ctx.author.display_name, alt_prompt_num)
+	alt_prompt_num:int = -1
+	if alt_prompt != "Default":
+		for i in range(len(character_data['data']['alternate_greetings'])):
+			if character_data['data']['alternate_greetings'][i].startswith(alt_prompt):
+				alt_prompt_num = i
+				break
+	await set_character(ctx, character_data, ctx.author.display_name, alt_prompt_num, card_img)
 
 
 @bot.slash_command(
@@ -372,7 +429,7 @@ async def autocomplete_basic_example(
 )
 @discord.option(
 	"file", 
-	description="The character card you want to upload.",
+	description="The character card you want to upload. Must be PNG or JSON format.",
 	required=True
 )
 async def upload(ctx: discord.ApplicationContext, file: discord.Attachment) -> None:
@@ -384,34 +441,42 @@ async def upload(ctx: discord.ApplicationContext, file: discord.Attachment) -> N
 		file (discord.Attachment): The file attachment uploaded by the admin.
 	"""
 	global character_data
-
-	# Ensure the file has a .json extension
-	if not file.filename.endswith(".json"):
-		await ctx.respond("❌ Error: Character card must have a .json extension.", ephemeral=True)
+	card_img = None
+	
+	async def handle_file(file) -> Tuple[str, TavernCardV2 | None]:
+		match os.path.splitext(file.filename.lower())[1]:
+			case ".json":
+				# Ensure file size is within limits (1024 KB)
+				if file.size > 1024 * 1024:
+					return "❌ Error: json file exceeds 1024 KB limit. This does not seem to be a valid character card.", None
+				try:
+					# Download and read the JSON file
+					file_content:bytes = await file.read()
+					return "", json.loads(file_content.decode("utf-8"))
+				except json.JSONDecodeError:
+					return "❌ Error: Invalid JSON format. Unable to parse the file.", None
+						
+				# Log the successful upload
+				# print(f"Admin {ctx.author} uploaded a valid JSON file: {file.filename}")
+			case ".png":
+				if file.size > 1024 * 1024 * 8:
+					return "❌ Error: Images should be under 8MB.", None
+				card_img = BytesIO(await file.read())
+				tmp_data = load_character_from_card_image(card_img)
+				if tmp_data:
+					return "", tmp_data
+				else:
+					return "❌ This image doesn't seem to have any character card data embedded.", None
+			case _:
+				return "❌ Not a valid file type. Only JSON and PNG is supported.", None
+			
+	error, new_data = await handle_file(file)
+	if error:
+		await ctx.respond(error, ephemeral=True)
 		return
 
-	# Ensure file size is within limits (1024 KB)
-	if file.size > 1024 * 1024:
-		await ctx.respond("❌ Error: json file exceeds 1024 KB limit. This does not seem to be a valid character card.", ephemeral=True)
-		return
+	await set_character(ctx, new_data, ctx.author.display_name, -1, card_img) #type: ignore
 
-	try:
-		# Download and read the JSON file
-		file_content = await file.read()
-		character_data = json.loads(file_content.decode("utf-8"))
-		
-		# Log the successful upload
-		print(f"Admin {ctx.author} uploaded a valid JSON file: {file.filename}")
-
-		await set_character(ctx, character_data, ctx.author.display_name)
-
-		#print(err_message)
-	
-	except json.JSONDecodeError:
-		await ctx.respond("❌ Error: Invalid JSON format. Unable to parse the file.", ephemeral=True)
-	
-	except Exception as e:
-		await ctx.respond(f"❌ Error: An unexpected issue occurred ({str(e)}).", ephemeral=True)
 
 # @bot.slash_command(
 # 	name="nickname",
