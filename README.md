@@ -13,7 +13,7 @@ Discord bot that uses [KoboldCPP](https://github.com/LostRuins/koboldcpp) API an
 
 # Setup
 1. Download main.py
-2. If you want to install character cards, place the downloaded .json files next to main.py. Otherwise you can use the /upload command to temporarily set the character.
+2. If you want to install character cards, create a Characters folder and place your .json or .png files inside it. Otherwise you can use the /upload command to temporarily set the character.
 3. If you want to install .json lorebooks (Other than ones that come with a character card), create a Lorebooks folder next to main.py and place them inside. You can then use these with the /character command.
 4. Set `DISCORD_TOKEN` environment variable or modify main.py
 5. Start KoboldCPP on your PC or change endpoint in main.py to a known server that supports the KoboldCPP API
